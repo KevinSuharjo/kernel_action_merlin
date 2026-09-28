@@ -1,59 +1,61 @@
-name: Build Nekochan MT6768 Kernel
+# Taruh di: .github/workflows/build-kernel.yml (di dalam repo kernel lo, sejajar build.sh)
+name: Build kernel merlin
 
 on:
-  workflow_dispatch: # Bisa di-trigger manual lewat tab Actions
+  workflow_dispatch:
+    inputs:
+      ksu:
+        description: "Integrasi KernelSU (butuh manual hook sudah ter-patch di source!)"
+        type: boolean
+        default: false
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-
+    runs-on: ubuntu-22.04
     steps:
-      - name: Checkout Repository
+      - name: Checkout source
         uses: actions/checkout@v4
         with:
-          repository: KevinSuharjo/android_kernel_xiaomi_mt6768
-          ref: lineage-20
+          fetch-depth: 1
 
-      - name: Setup Environment & Dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential flex git g++-multilib gcc-multilib libssl-dev zlib1g-dev u-boot-tools libarchive-tools cpio python3 wget curl libelf-dev
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libssl-dev libelf-dev cpio lz4 zstd zip \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
-      - name: Clone AOSP Clang Toolchain
+      - name: Get AOSP clang r416183b
         run: |
-          git clone https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b.git clang --depth=1
+          git clone --depth=1 \
+            https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b.git clang
+          clang/bin/clang --version
 
-      - name: Setup KernelSU
+      - name: Integrate KernelSU (optional)
+        if: ${{ inputs.ksu }}
         run: |
+          # sebaiknya pin ke tag/commit, bukan master
           curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/refs/heads/master/kernel/setup.sh" | bash -s master
+          printf 'CONFIG_KSU=y\nCONFIG_KSU_HACK_ARM64_BRANCH_LINK=y\n' > ksu.config
 
-      - name: Clone AnyKernel3 for Packaging
-        run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git -b master anykernel
-
-      - name: Run build.sh
+      - name: Build
         run: |
           chmod +x build.sh
-          ./build.sh
+          if [ -f ksu.config ]; then export EXTRA_CFG=ksu.config; fi
+          ./build.sh 2>&1 | tee build.log
 
-      - name: Package Kernel into AnyKernel3
-        run: |
-          if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
-              cp out/arch/arm64/boot/Image.gz-dtb anykernel/
-          elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
-              cp out/arch/arm64/boot/Image.gz anykernel/
-          else
-              echo "Kernel image not found!"
-              exit 1
-          fi
-
-          cd anykernel
-          rm -rf .git .github README.md
-
-          zip -r9 ../kernel-nekochan-merlin.zip *
-
-      - name: Upload Artifact
+      - name: Upload kernel image
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel-Nekochan-RedmiNote9
-          path: kernel-nekochan-merlin.zip
+          name: kernel-merlin
+          if-no-files-found: error
+          path: |
+            out/arch/arm64/boot/Image*
+            out/arch/arm64/boot/dts/mediatek/*.dtb
+
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
