@@ -1,0 +1,59 @@
+name: Build Nekochan MT6768 Kernel
+
+on:
+  workflow_dispatch: # Bisa di-trigger manual lewat tab Actions
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          repository: KevinSuharjo/android_kernel_xiaomi_mt6768
+          ref: lineage-20
+
+      - name: Setup Environment & Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential flex git g++-multilib gcc-multilib libssl-dev zlib1g-dev u-boot-tools libarchive-tools cpio python3 wget curl libelf-dev
+
+      - name: Clone AOSP Clang Toolchain
+        run: |
+          git clone https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b.git clang --depth=1
+
+      - name: Setup KernelSU
+        run: |
+          curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/refs/heads/master/kernel/setup.sh" | bash -s master
+
+      - name: Clone AnyKernel3 for Packaging
+        run: |
+          git clone --depth=1 https://github.com/kernel-swaps/AnyKernel3 -b master anykernel
+
+      - name: Run build.sh
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Package Kernel into AnyKernel3
+        run: |
+          if [ -f "out/arch/arm64/boot/Image.gz-dtb" ]; then
+              cp out/arch/arm64/boot/Image.gz-dtb anykernel/
+          elif [ -f "out/arch/arm64/boot/Image.gz" ]; then
+              cp out/arch/arm64/boot/Image.gz anykernel/
+          else
+              echo "Kernel image not found!"
+              exit 1
+          fi
+
+          cd anykernel
+          rm -rf .git .github README.md
+
+          zip -r9 ../kernel-nekochan-merlin.zip *
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kernel-Nekochan-RedmiNote9
+          path: kernel-nekochan-merlin.zip
