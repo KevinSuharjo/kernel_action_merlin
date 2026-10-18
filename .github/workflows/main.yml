@@ -76,6 +76,7 @@ jobs:
 
           # 1. kernel/reboot.c (Kunci verifikasi Kbuild KernelSU-Next)
           reboot_header = """
+          #include <linux/types.h>
           #ifdef CONFIG_KSU_MANUAL_HOOK
           extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
           #endif
@@ -85,10 +86,12 @@ jobs:
           \tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
           #endif
           """
-          patch_file("kernel/reboot.c", reboot_header, r"SYSCALL_DEFINE4\s*\(\s*reboot[^{]*\{", reboot_body, "ksu_handle_sys_reboot")
+          patch_file("kernel/reboot.c", reboot_header, r"SYSCALL_DEFINE4\s*\(\s*reboot[^{]*\{[^;]*;[^;]*;[^;]*int\s+ret\s*=\s*0;", reboot_body, "ksu_handle_sys_reboot")
 
           # 2. fs/exec.c (Eksekusi su binary)
           exec_header = """
+          #include <linux/types.h>
+          #include <linux/fs.h>
           #ifdef CONFIG_KSU
           extern bool ksu_execveat_hook __read_mostly;
           extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);
@@ -103,10 +106,11 @@ jobs:
           \t\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
           #endif
           """
-          patch_file("fs/exec.c", exec_header, r"static\s+int\s+do_execveat_common[^{]*\{", exec_body, "ksu_handle_execveat")
+          patch_file("fs/exec.c", exec_header, r"static\s+int\s+do_execveat_common[^{]*\{[^;]*;[^;]*;[^;]*;[^;]*;[^;]*int\s+retval;", exec_body, "ksu_handle_execveat")
 
           # 3. fs/open.c (faccessat)
           open_header = """
+          #include <linux/types.h>
           #ifdef CONFIG_KSU
           extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);
           #endif
@@ -116,10 +120,12 @@ jobs:
           \tksu_handle_faccessat(&dfd, &filename, &mode, NULL);
           #endif
           """
-          patch_file("fs/open.c", open_header, r"SYSCALL_DEFINE3\s*\(\s*faccessat[^{]*\{", open_body, "ksu_handle_faccessat")
+          patch_file("fs/open.c", open_header, r"SYSCALL_DEFINE3\s*\(\s*faccessat[^{]*\{[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;[^;]*unsigned\s+int\s+lookup_flags[^;]*;", open_body, "ksu_handle_faccessat")
 
           # 4. fs/read_write.c (vfs_read)
           rw_header = """
+          #include <linux/types.h>
+          #include <linux/fs.h>
           #ifdef CONFIG_KSU
           extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);
           #endif
@@ -129,10 +135,11 @@ jobs:
           \tksu_handle_vfs_read(&file, &buf, &count, pos);
           #endif
           """
-          patch_file("fs/read_write.c", rw_header, r"ssize_t\s+vfs_read\s*\([^{]*\{", rw_body, "ksu_handle_vfs_read")
+          patch_file("fs/read_write.c", rw_header, r"ssize_t\s+vfs_read\s*\([^{]*\{\s*ssize_t\s+ret;", rw_body, "ksu_handle_vfs_read")
 
           # 5. fs/stat.c (vfs_statx)
           stat_header = """
+          #include <linux/types.h>
           #ifdef CONFIG_KSU
           extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
           #endif
@@ -142,10 +149,11 @@ jobs:
           \tksu_handle_stat(&dfd, &filename, &flags);
           #endif
           """
-          patch_file("fs/stat.c", stat_header, r"int\s+vfs_statx\s*\([^{]*\{", stat_body, "ksu_handle_stat")
+          patch_file("fs/stat.c", stat_header, r"int\s+vfs_statx[^{]*\{[^;]*;[^;]*;[^;]*unsigned\s+int\s+lookup_flags[^;]*;", stat_body, "ksu_handle_stat")
 
           # 6. drivers/input/input.c (Safe mode key input)
           input_header = """
+          #include <linux/types.h>
           #ifdef CONFIG_KSU
           extern bool ksu_input_hook __read_mostly;
           extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
@@ -157,7 +165,7 @@ jobs:
           \t\tksu_handle_input_handle_event(&type, &code, &value);
           #endif
           """
-          patch_file("drivers/input/input.c", input_header, r"static\s+void\s+input_handle_event\s*\([^{]*\{", input_body, "ksu_handle_input_handle_event")
+          patch_file("drivers/input/input.c", input_header, r"static\s+void\s+input_handle_event[^{]*\{[^;]*int\s+disposition[^;]*;", input_body, "ksu_handle_input_handle_event")
           EOF
 
       - name: Fragment EROFS
