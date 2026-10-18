@@ -37,8 +37,6 @@ jobs:
         run: |
           git clone --depth=1 -b kernel-tree-7 \
             https://github.com/KevinSuharjo/android_kernel_xiaomi_mt6768-s.git kernel
-          cp build.sh kernel/
-          chmod +x kernel/build.sh
 
       - name: Bersihkan EXTRAVERSION di Makefile
         working-directory: kernel
@@ -209,6 +207,48 @@ jobs:
               print("sys.c already patched or target pattern not found.")
           PYEOF
           git diff kernel/sys.c || true
+
+      - name: Generate build.sh Langsung
+        working-directory: kernel
+        run: |
+          cat << 'EOF' > build.sh
+          #!/bin/bash
+          set -e
+
+          mkdir -p out
+
+          export KBUILD_BUILD_USER="kepin"
+          export KBUILD_BUILD_HOST="lol"
+
+          # Setup Clang path
+          export PATH=$PWD/clang/bin:$PWD/../clang/bin:$PATH
+          export LD_LIBRARY_PATH=$PWD/clang/lib64:$PWD/../clang/lib64:$LD_LIBRARY_PATH
+
+          CFG=arch/arm64/configs/vendor
+
+          # Fragment config yang digabung (merlin.config menimpa mt6768_defconfig)
+          FRAGMENTS="$CFG/mt6768_defconfig $CFG/merlin.config"
+          [ -f "$CFG/erofs.config" ] && FRAGMENTS="$FRAGMENTS $CFG/erofs.config"
+          [ -f "$CFG/ksu.config" ]   && FRAGMENTS="$FRAGMENTS $CFG/ksu.config"
+          echo "Fragment yang dipakai: $FRAGMENTS"
+
+          ARCH=arm64 scripts/kconfig/merge_config.sh -O "out" $FRAGMENTS
+
+          make -j$(nproc --all) ARCH=arm64 SUBARCH=arm64 O=out LLVM=1 LLVM_IAS=1 \
+          	CC="clang" \
+          	AR="llvm-ar" \
+          	NM="llvm-nm" \
+          	LD="ld.lld -S" \
+          	OBJCOPY="llvm-objcopy" \
+          	OBJDUMP="llvm-objdump" \
+          	STRIP="llvm-strip" \
+          	CLANG_TRIPLE="aarch64-linux-gnu-" \
+          	CROSS_COMPILE="aarch64-linux-gnu-" \
+          	CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
+          	CROSS_COMPILE_COMPAT="arm-linux-gnueabi-" \
+          	CONFIG_DEBUG_SECTION_MISMATCH=y
+          EOF
+          chmod +x build.sh
 
       - name: Build Kernel dengan build.sh
         working-directory: kernel
