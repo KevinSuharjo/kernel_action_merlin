@@ -76,7 +76,7 @@ jobs:
           # CONFIG_KRETPROBES is not set
           # CONFIG_KPROBE_EVENTS is not set
 
-          # KernelSU dengan ARM64 Branch Link (Anti-ribet tanpa manual hook)
+          # KernelSU dengan ARM64 Branch Link (Anti-ribet)
           CONFIG_KSU=y
           CONFIG_KSU_HACK_ARM64_BRANCH_LINK=y
 
@@ -102,34 +102,6 @@ jobs:
           CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y
           EOF
           cat arch/arm64/configs/merlin.config
-
-      - name: Patch eBPF / uname spoofing di kernel/sys.c
-        working-directory: kernel
-        run: |
-          python3 - << 'PYEOF'
-          with open("kernel/sys.c", "r") as f:
-              code = f.read()
-
-          spoof_code = """
-          \t/* eBPF / netd version spoofing */
-          \tif (strstr(current->comm, "bpfloader") ||
-          \t    strstr(current->comm, "netbpfload") ||
-          \t    strstr(current->comm, "netd") ||
-          \t    strstr(current->comm, "system_server")) {
-          \t\tstrscpy(tmp.release, "5.10.0-android12-9-g000000000000", sizeof(tmp.release));
-          \t}
-          """
-
-          target = "memcpy(&tmp, utsname(), sizeof(tmp));\n\tup_read(&uts_sem);"
-          if target in code and "bpfloader" not in code:
-              code = code.replace(target, target + spoof_code)
-              with open("kernel/sys.c", "w") as f:
-                  f.write(code)
-              print("sys.c successfully patched for eBPF spoofing!")
-          else:
-              print("sys.c already patched or target pattern not found.")
-          PYEOF
-          git diff kernel/sys.c || true
 
       - name: Generate build.sh Langsung
         working-directory: kernel
