@@ -50,24 +50,52 @@ jobs:
           rm -rf drivers/kernelsu KernelSU-Next
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/legacy/kernel/setup.sh" | bash -s legacy
 
-      - name: Inject Manual Hooks untuk KernelSU (Kprobes OFF Mode)
+      - name: Inject Lengkap Manual Hooks untuk KernelSU-Next
         working-directory: kernel
         run: |
           python3 - << 'EOF'
-          import os
+          import re
 
-          # 1. fs/exec.c
-          with open("fs/exec.c", "r") as f:
-              content = f.read()
-          if "ksu_handle_execveat" not in content:
-              header = """
+          def patch_file(filepath, header_code, pattern, body_code, name):
+              with open(filepath, "r") as f:
+                  content = f.read()
+              
+              if name in content:
+                  print(f"[SKIP] {filepath} already contains {name}")
+                  return
+              
+              m = re.search(pattern, content)
+              if m:
+                  content = header_code + content[:m.end()] + body_code + content[m.end():]
+                  with open(filepath, "w") as f:
+                      f.write(content)
+                  print(f"[SUCCESS] Patched {filepath} for {name}")
+              else:
+                  print(f"[ERROR] Pattern not found in {filepath}")
+                  exit(1)
+
+          # 1. kernel/reboot.c (Kunci verifikasi Kbuild KernelSU-Next)
+          reboot_header = """
+          #ifdef CONFIG_KSU_MANUAL_HOOK
+          extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
+          #endif
+          """
+          reboot_body = """
+          #ifdef CONFIG_KSU_MANUAL_HOOK
+          \tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
+          #endif
+          """
+          patch_file("kernel/reboot.c", reboot_header, r"SYSCALL_DEFINE4\s*\(\s*reboot[^{]*\{", reboot_body, "ksu_handle_sys_reboot")
+
+          # 2. fs/exec.c (Eksekusi su binary)
+          exec_header = """
           #ifdef CONFIG_KSU
           extern bool ksu_execveat_hook __read_mostly;
           extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);
           extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);
           #endif
           """
-              hook = """
+          exec_body = """
           #ifdef CONFIG_KSU
           \tif (unlikely(ksu_execveat_hook))
           \t\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
@@ -75,55 +103,61 @@ jobs:
           \t\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
           #endif
           """
-              content = header + content
-              target = "static int do_execveat_common(int fd, struct filename *filename,\n\t\t\t      struct user_arg_ptr argv,\n\t\t\t      struct user_arg_ptr envp,\n\t\t\t      int flags)\n{"
-              if target in content:
-                  content = content.replace(target, target + hook)
-                  with open("fs/exec.c", "w") as f:
-                      f.write(content)
-                  print("[+] fs/exec.c patched successfully")
+          patch_file("fs/exec.c", exec_header, r"static\s+int\s+do_execveat_common[^{]*\{", exec_body, "ksu_handle_execveat")
 
-          # 2. fs/open.c
-          with open("fs/open.c", "r") as f:
-              content = f.read()
-          if "ksu_handle_faccessat" not in content:
-              header = "\n#ifdef CONFIG_KSU\nextern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);\n#endif\n"
-              hook = "\n#ifdef CONFIG_KSU\n\tksu_handle_faccessat(&dfd, &filename, &mode, NULL);\n#endif\n"
-              content = header + content
-              target = "SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)\n{"
-              if target in content:
-                  content = content.replace(target, target + hook)
-                  with open("fs/open.c", "w") as f:
-                      f.write(content)
-                  print("[+] fs/open.c patched successfully")
+          # 3. fs/open.c (faccessat)
+          open_header = """
+          #ifdef CONFIG_KSU
+          extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);
+          #endif
+          """
+          open_body = """
+          #ifdef CONFIG_KSU
+          \tksu_handle_faccessat(&dfd, &filename, &mode, NULL);
+          #endif
+          """
+          patch_file("fs/open.c", open_header, r"SYSCALL_DEFINE3\s*\(\s*faccessat[^{]*\{", open_body, "ksu_handle_faccessat")
 
-          # 3. fs/read_write.c
-          with open("fs/read_write.c", "r") as f:
-              content = f.read()
-          if "ksu_handle_vfs_read" not in content:
-              header = "\n#ifdef CONFIG_KSU\nextern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);\n#endif\n"
-              hook = "\n#ifdef CONFIG_KSU\n\tksu_handle_vfs_read(&file, &buf, &count, pos);\n#endif\n"
-              content = header + content
-              target = "ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)\n{"
-              if target in content:
-                  content = content.replace(target, target + hook)
-                  with open("fs/read_write.c", "w") as f:
-                      f.write(content)
-                  print("[+] fs/read_write.c patched successfully")
+          # 4. fs/read_write.c (vfs_read)
+          rw_header = """
+          #ifdef CONFIG_KSU
+          extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);
+          #endif
+          """
+          rw_body = """
+          #ifdef CONFIG_KSU
+          \tksu_handle_vfs_read(&file, &buf, &count, pos);
+          #endif
+          """
+          patch_file("fs/read_write.c", rw_header, r"ssize_t\s+vfs_read\s*\([^{]*\{", rw_body, "ksu_handle_vfs_read")
 
-          # 4. fs/stat.c
-          with open("fs/stat.c", "r") as f:
-              content = f.read()
-          if "ksu_handle_stat" not in content:
-              header = "\n#ifdef CONFIG_KSU\nextern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);\n#endif\n"
-              hook = "\n#ifdef CONFIG_KSU\n\tksu_handle_stat(&dfd, &filename, &flags);\n#endif\n"
-              content = header + content
-              target = "int vfs_statx(int dfd, const char __user *filename, int flags,\n\t      struct kstat *stat, u32 request_mask)\n{"
-              if target in content:
-                  content = content.replace(target, target + hook)
-                  with open("fs/stat.c", "w") as f:
-                      f.write(content)
-                  print("[+] fs/stat.c patched successfully")
+          # 5. fs/stat.c (vfs_statx)
+          stat_header = """
+          #ifdef CONFIG_KSU
+          extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
+          #endif
+          """
+          stat_body = """
+          #ifdef CONFIG_KSU
+          \tksu_handle_stat(&dfd, &filename, &flags);
+          #endif
+          """
+          patch_file("fs/stat.c", stat_header, r"int\s+vfs_statx\s*\([^{]*\{", stat_body, "ksu_handle_stat")
+
+          # 6. drivers/input/input.c (Safe mode key input)
+          input_header = """
+          #ifdef CONFIG_KSU
+          extern bool ksu_input_hook __read_mostly;
+          extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
+          #endif
+          """
+          input_body = """
+          #ifdef CONFIG_KSU
+          \tif (unlikely(ksu_input_hook))
+          \t\tksu_handle_input_handle_event(&type, &code, &value);
+          #endif
+          """
+          patch_file("drivers/input/input.c", input_header, r"static\s+void\s+input_handle_event\s*\([^{]*\{", input_body, "ksu_handle_input_handle_event")
           EOF
 
       - name: Fragment EROFS
