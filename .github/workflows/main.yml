@@ -129,8 +129,8 @@ jobs:
       - name: Fragment EROFS
         working-directory: kernel
         run: |
-          mkdir -p arch/arm64/configs/vendor
-          cat << 'EOF' > arch/arm64/configs/vendor/erofs.config
+          mkdir -p arch/arm64/configs
+          cat << 'EOF' > arch/arm64/configs/erofs.config
           CONFIG_EROFS_FS=y
           CONFIG_EROFS_FS_ZIP=y
           CONFIG_EROFS_FS_CLUSTER_PAGE_LIMIT=1
@@ -139,9 +139,8 @@ jobs:
       - name: Inject KSU-Next, DroidSpace, Custom Name & Matikan Kprobes
         working-directory: kernel
         run: |
-          mkdir -p arch/arm64/configs/vendor
-          touch arch/arm64/configs/vendor/merlin.config
-          cat << 'EOF' >> arch/arm64/configs/vendor/merlin.config
+          mkdir -p arch/arm64/configs
+          cat << 'EOF' > arch/arm64/configs/merlin.config
 
           # Custom Kernel Name
           # CONFIG_LOCALVERSION_AUTO is not set
@@ -178,7 +177,7 @@ jobs:
           CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
           CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y
           EOF
-          cat arch/arm64/configs/vendor/merlin.config
+          cat arch/arm64/configs/merlin.config
 
       - name: Patch eBPF / uname spoofing di kernel/sys.c
         working-directory: kernel
@@ -224,12 +223,13 @@ jobs:
           export PATH=$PWD/clang/bin:$PWD/../clang/bin:$PATH
           export LD_LIBRARY_PATH=$PWD/clang/lib64:$PWD/../clang/lib64:$LD_LIBRARY_PATH
 
-          CFG=arch/arm64/configs/vendor
+          CFG=arch/arm64/configs
 
-          # Fragment config yang digabung (merlin.config menimpa mt6768_defconfig)
-          FRAGMENTS="$CFG/mt6768_defconfig $CFG/merlin.config"
-          [ -f "$CFG/erofs.config" ] && FRAGMENTS="$FRAGMENTS $CFG/erofs.config"
-          [ -f "$CFG/ksu.config" ]   && FRAGMENTS="$FRAGMENTS $CFG/ksu.config"
+          # Fragment config yang digabung (merlin_defconfig sebagai basis utama)
+          FRAGMENTS="$CFG/merlin_defconfig"
+          [ -f "$CFG/merlin.config" ] && FRAGMENTS="$FRAGMENTS $CFG/merlin.config"
+          [ -f "$CFG/erofs.config" ]  && FRAGMENTS="$FRAGMENTS $CFG/erofs.config"
+          [ -f "$CFG/ksu.config" ]    && FRAGMENTS="$FRAGMENTS $CFG/ksu.config"
           echo "Fragment yang dipakai: $FRAGMENTS"
 
           ARCH=arm64 scripts/kconfig/merge_config.sh -O "out" $FRAGMENTS
