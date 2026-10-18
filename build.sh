@@ -1,35 +1,317 @@
-#!/bin/bash
-set -e
+name: Build Merlin Kernel (Salsachan-Nekopieee)
 
-mkdir -p out
+on:
+  workflow_dispatch:
 
-export KBUILD_BUILD_USER="kepin"
-export KBUILD_BUILD_HOST="lol"
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 240
+    steps:
+      - name: Checkout Action Builder
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-# Setup Clang path (support jika clang ada di root kernel atau di folder luar)
-export PATH=$PWD/clang/bin:$PWD/../clang/bin:$PATH
-export LD_LIBRARY_PATH=$PWD/clang/lib64:$PWD/../clang/lib64:$LD_LIBRARY_PATH
+      - name: Kosongkan Disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+          df -h /
 
-CFG=arch/arm64/configs/vendor
+      - name: Install Dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libssl-dev libelf-dev cpio lz4 zstd xz-utils curl \
+            device-tree-compiler python3 \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
-# Fragment config yang digabung, urutan penting (merlin.config menimpa mt6768_defconfig)
-FRAGMENTS="$CFG/mt6768_defconfig $CFG/merlin.config"
-[ -f "$CFG/erofs.config" ] && FRAGMENTS="$FRAGMENTS $CFG/erofs.config"
-[ -f "$CFG/ksu.config" ]   && FRAGMENTS="$FRAGMENTS $CFG/ksu.config"
-echo "Fragment yang dipakai: $FRAGMENTS"
+      - name: Ambil Clang r416183b
+        run: |
+          git clone --depth=1 -b lineage-20.0 \
+            https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b clang
+          export LD_LIBRARY_PATH="$PWD/clang/lib64:$LD_LIBRARY_PATH"
+          clang/bin/clang --version | head -1
 
-ARCH=arm64 scripts/kconfig/merge_config.sh -O "out" $FRAGMENTS
+      - name: Clone Kernel Base (KevinSuharjo/android_kernel_xiaomi_mt6768-s:kernel-tree-7)
+        run: |
+          git clone --depth=1 -b kernel-tree-7 \
+            https://github.com/KevinSuharjo/android_kernel_xiaomi_mt6768-s.git kernel
 
-make -j$(nproc --all) ARCH=arm64 SUBARCH=arm64 O=out LLVM=1 LLVM_IAS=1 \
-	CC="clang" \
-	AR="llvm-ar" \
-	NM="llvm-nm" \
-	LD="ld.lld -S" \
-	OBJCOPY="llvm-objcopy" \
-	OBJDUMP="llvm-objdump" \
-	STRIP="llvm-strip" \
-	CLANG_TRIPLE="aarch64-linux-gnu-" \
-	CROSS_COMPILE="aarch64-linux-gnu-" \
-	CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
-	CROSS_COMPILE_COMPAT="arm-linux-gnueabi-" \
-	CONFIG_DEBUG_SECTION_MISMATCH=y
+      - name: Bersihkan EXTRAVERSION di Makefile
+        working-directory: kernel
+        run: |
+          sed -i -E 's/^(EXTRAVERSION\s*=\s*).*/\1/' Makefile
+          head -n 5 Makefile
+
+      - name: Setup KernelSU-Next (Legacy Non-GKI 4.14)
+        working-directory: kernel
+        run: |
+          rm -rf drivers/kernelsu KernelSU-Next
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/legacy/kernel/setup.sh" | bash -s legacy
+
+      - name: Inject Lengkap Manual Hooks untuk KernelSU-Next
+        working-directory: kernel
+        run: |
+          python3 - << 'EOF'
+          import re
+
+          def patch_file(filepath, header_code, pattern, body_code, name):
+              with open(filepath, "r") as f:
+                  content = f.read()
+              
+              if name in content:
+                  print(f"[SKIP] {filepath} already contains {name}")
+                  return
+              
+              m = re.search(pattern, content)
+              if m:
+                  content = header_code + content[:m.end()] + body_code + content[m.end():]
+                  with open(filepath, "w") as f:
+                      f.write(content)
+                  print(f"[SUCCESS] Patched {filepath} for {name}")
+              else:
+                  print(f"[ERROR] Pattern not found in {filepath}")
+                  exit(1)
+
+          # 1. kernel/reboot.c (Kunci verifikasi Kbuild KernelSU-Next)
+          reboot_header = """
+          #include <linux/types.h>
+          #ifdef CONFIG_KSU_MANUAL_HOOK
+          extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
+          #endif
+          """
+          reboot_body = """
+          #ifdef CONFIG_KSU_MANUAL_HOOK
+          \tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
+          #endif
+          """
+          patch_file("kernel/reboot.c", reboot_header, r"SYSCALL_DEFINE4\s*\(\s*reboot[^{]*\{[^;]*;[^;]*;[^;]*int\s+ret\s*=\s*0;", reboot_body, "ksu_handle_sys_reboot")
+
+          # 2. fs/exec.c (Eksekusi su binary)
+          exec_header = """
+          #include <linux/types.h>
+          #include <linux/fs.h>
+          #ifdef CONFIG_KSU
+          extern bool ksu_execveat_hook __read_mostly;
+          extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);
+          extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);
+          #endif
+          """
+          exec_body = """
+          #ifdef CONFIG_KSU
+          \tif (unlikely(ksu_execveat_hook))
+          \t\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
+          \telse
+          \t\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
+          #endif
+          """
+          patch_file("fs/exec.c", exec_header, r"static\s+int\s+do_execveat_common[^{]*\{[^;]*;[^;]*;[^;]*;[^;]*;[^;]*int\s+retval;", exec_body, "ksu_handle_execveat")
+
+          # 3. fs/open.c (faccessat)
+          open_header = """
+          #include <linux/types.h>
+          #ifdef CONFIG_KSU
+          extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);
+          #endif
+          """
+          open_body = """
+          #ifdef CONFIG_KSU
+          \tksu_handle_faccessat(&dfd, &filename, &mode, NULL);
+          #endif
+          """
+          patch_file("fs/open.c", open_header, r"SYSCALL_DEFINE3\s*\(\s*faccessat[^{]*\{[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;[^;]*unsigned\s+int\s+lookup_flags[^;]*;", open_body, "ksu_handle_faccessat")
+
+          # 4. fs/read_write.c (vfs_read) - Ditambahkan &pos
+          rw_header = """
+          #include <linux/types.h>
+          #include <linux/fs.h>
+          #ifdef CONFIG_KSU
+          extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);
+          #endif
+          """
+          rw_body = """
+          #ifdef CONFIG_KSU
+          \tksu_handle_vfs_read(&file, &buf, &count, &pos);
+          #endif
+          """
+          patch_file("fs/read_write.c", rw_header, r"ssize_t\s+vfs_read\s*\([^{]*\{\s*ssize_t\s+ret;", rw_body, "ksu_handle_vfs_read")
+
+          # 5. fs/stat.c (vfs_statx)
+          stat_header = """
+          #include <linux/types.h>
+          #ifdef CONFIG_KSU
+          extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
+          #endif
+          """
+          stat_body = """
+          #ifdef CONFIG_KSU
+          \tksu_handle_stat(&dfd, &filename, &flags);
+          #endif
+          """
+          patch_file("fs/stat.c", stat_header, r"int\s+vfs_statx[^{]*\{[^;]*;[^;]*;[^;]*unsigned\s+int\s+lookup_flags[^;]*;", stat_body, "ksu_handle_stat")
+
+          # 6. drivers/input/input.c (Safe mode key input)
+          input_header = """
+          #include <linux/types.h>
+          #ifdef CONFIG_KSU
+          extern bool ksu_input_hook __read_mostly;
+          extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
+          #endif
+          """
+          input_body = """
+          #ifdef CONFIG_KSU
+          \tif (unlikely(ksu_input_hook))
+          \t\tksu_handle_input_handle_event(&type, &code, &value);
+          #endif
+          """
+          patch_file("drivers/input/input.c", input_header, r"static\s+void\s+input_handle_event[^{]*\{[^;]*int\s+disposition[^;]*;", input_body, "ksu_handle_input_handle_event")
+          EOF
+
+      - name: Fragment EROFS
+        working-directory: kernel
+        run: |
+          mkdir -p arch/arm64/configs
+          cat << 'EOF' > arch/arm64/configs/erofs.config
+          CONFIG_EROFS_FS=y
+          CONFIG_EROFS_FS_ZIP=y
+          CONFIG_EROFS_FS_CLUSTER_PAGE_LIMIT=1
+          EOF
+
+      - name: Inject KSU-Next, DroidSpace, Custom Name & Matikan Kprobes
+        working-directory: kernel
+        run: |
+          mkdir -p arch/arm64/configs
+          cat << 'EOF' > arch/arm64/configs/merlin.config
+
+          # Custom Kernel Name
+          # CONFIG_LOCALVERSION_AUTO is not set
+          CONFIG_LOCALVERSION="-salsachan-nekopieee-hyperos+"
+
+          # Matikan KPROBES total (Biar adem & anti-panic)
+          # CONFIG_KPROBES is not set
+          # CONFIG_HAVE_KPROBES is not set
+          # CONFIG_KRETPROBES is not set
+          # CONFIG_KPROBE_EVENTS is not set
+
+          # KernelSU-Next (Manual Hook Mode)
+          CONFIG_KSU=y
+          CONFIG_KSU_MANUAL_HOOK=y
+
+          # DroidSpace Kernel Requirements (Namespaces & Netfilter)
+          CONFIG_NAMESPACES=y
+          CONFIG_UTS_NS=y
+          CONFIG_IPC_NS=y
+          CONFIG_USER_NS=y
+          CONFIG_PID_NS=y
+          CONFIG_NET_NS=y
+          CONFIG_CGROUPS=y
+          CONFIG_CGROUP_DEVICE=y
+          CONFIG_CGROUP_FREEZER=y
+          CONFIG_CGROUP_SCHED=y
+          CONFIG_CPUSETS=y
+          CONFIG_MEMCG=y
+          CONFIG_VETH=y
+          CONFIG_MACVLAN=y
+          CONFIG_BRIDGE=y
+          CONFIG_IP_NF_TARGET_MASQUERADE=y
+          CONFIG_NETFILTER_XT_MATCH_COMMENT=y
+          CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
+          CONFIG_NETFILTER_XT_MATCH_CONNTRACK=y
+          EOF
+          cat arch/arm64/configs/merlin.config
+
+      - name: Patch eBPF / uname spoofing di kernel/sys.c
+        working-directory: kernel
+        run: |
+          python3 - << 'PYEOF'
+          with open("kernel/sys.c", "r") as f:
+              code = f.read()
+
+          spoof_code = """
+          \t/* eBPF / netd version spoofing */
+          \tif (strstr(current->comm, "bpfloader") ||
+          \t    strstr(current->comm, "netbpfload") ||
+          \t    strstr(current->comm, "netd") ||
+          \t    strstr(current->comm, "system_server")) {
+          \t\tstrscpy(tmp.release, "5.10.0-android12-9-g000000000000", sizeof(tmp.release));
+          \t}
+          """
+
+          target = "memcpy(&tmp, utsname(), sizeof(tmp));\n\tup_read(&uts_sem);"
+          if target in code and "bpfloader" not in code:
+              code = code.replace(target, target + spoof_code)
+              with open("kernel/sys.c", "w") as f:
+                  f.write(code)
+              print("sys.c successfully patched for eBPF spoofing!")
+          else:
+              print("sys.c already patched or target pattern not found.")
+          PYEOF
+          git diff kernel/sys.c || true
+
+      - name: Generate build.sh Langsung
+        working-directory: kernel
+        run: |
+          cat << 'EOF' > build.sh
+          #!/bin/bash
+          set -e
+
+          mkdir -p out
+
+          export KBUILD_BUILD_USER="kepin"
+          export KBUILD_BUILD_HOST="lol"
+
+          # Setup Clang path
+          export PATH=$PWD/clang/bin:$PWD/../clang/bin:$PATH
+          export LD_LIBRARY_PATH=$PWD/clang/lib64:$PWD/../clang/lib64:$LD_LIBRARY_PATH
+
+          CFG=arch/arm64/configs
+
+          # Fragment config yang digabung (merlin_defconfig sebagai basis utama)
+          FRAGMENTS="$CFG/merlin_defconfig"
+          [ -f "$CFG/merlin.config" ] && FRAGMENTS="$FRAGMENTS $CFG/merlin.config"
+          [ -f "$CFG/erofs.config" ]  && FRAGMENTS="$FRAGMENTS $CFG/erofs.config"
+          [ -f "$CFG/ksu.config" ]    && FRAGMENTS="$FRAGMENTS $CFG/ksu.config"
+          echo "Fragment yang dipakai: $FRAGMENTS"
+
+          ARCH=arm64 scripts/kconfig/merge_config.sh -O "out" $FRAGMENTS
+
+          make -j$(nproc --all) ARCH=arm64 SUBARCH=arm64 O=out LLVM=1 LLVM_IAS=1 \
+          	CC="clang" \
+          	AR="llvm-ar" \
+          	NM="llvm-nm" \
+          	LD="ld.lld -S" \
+          	OBJCOPY="llvm-objcopy" \
+          	OBJDUMP="llvm-objdump" \
+          	STRIP="llvm-strip" \
+          	CLANG_TRIPLE="aarch64-linux-gnu-" \
+          	CROSS_COMPILE="aarch64-linux-gnu-" \
+          	CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
+          	CROSS_COMPILE_COMPAT="arm-linux-gnueabi-" \
+          	CONFIG_DEBUG_SECTION_MISMATCH=y
+          EOF
+          chmod +x build.sh
+
+      - name: Build Kernel dengan build.sh
+        working-directory: kernel
+        run: |
+          ./build.sh 2>&1 | tee build.log || {
+            echo "================ ERROR LOG ================"
+            grep -E -C 3 "error:|fatal error:" build.log | tail -n 100 || tail -n 150 build.log
+            exit 1
+          }
+
+      - name: Kumpulkan Hasil Build
+        run: |
+          mkdir -p result
+          cp kernel/out/arch/arm64/boot/Image kernel/out/arch/arm64/boot/Image.gz result/ 2>/dev/null || true
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb result/ 2>/dev/null || true
+          cp kernel/out/.config result/config
+          cp kernel/build.log result/
+          find kernel/out/arch/arm64/boot/dts -name '*.dtb' -o -name '*.dtbo' | xargs -I{} cp {} result/ 2>/dev/null || true
+          ls -lh result
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: merlin-salsachan-nekopieee-kernel
+          path: result/
