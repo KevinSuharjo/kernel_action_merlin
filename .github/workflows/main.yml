@@ -44,129 +44,11 @@ jobs:
           sed -i -E 's/^(EXTRAVERSION\s*=\s*).*/\1/' Makefile
           head -n 5 Makefile
 
-      - name: Setup KernelSU-Next (Legacy Non-GKI 4.14)
+      - name: Setup KernelSU (backslashxx - Branch Link Mode)
         working-directory: kernel
         run: |
-          rm -rf drivers/kernelsu KernelSU-Next
-          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/legacy/kernel/setup.sh" | bash -s legacy
-
-      - name: Inject Lengkap Manual Hooks untuk KernelSU-Next
-        working-directory: kernel
-        run: |
-          python3 - << 'EOF'
-          import re
-
-          def patch_file(filepath, header_code, pattern, body_code, name):
-              with open(filepath, "r") as f:
-                  content = f.read()
-              
-              if name in content:
-                  print(f"[SKIP] {filepath} already contains {name}")
-                  return
-              
-              m = re.search(pattern, content)
-              if m:
-                  content = header_code + content[:m.end()] + body_code + content[m.end():]
-                  with open(filepath, "w") as f:
-                      f.write(content)
-                  print(f"[SUCCESS] Patched {filepath} for {name}")
-              else:
-                  print(f"[ERROR] Pattern not found in {filepath}")
-                  exit(1)
-
-          # 1. kernel/reboot.c (Kunci verifikasi Kbuild KernelSU-Next)
-          reboot_header = """
-          #include <linux/types.h>
-          #ifdef CONFIG_KSU_MANUAL_HOOK
-          extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);
-          #endif
-          """
-          reboot_body = """
-          #ifdef CONFIG_KSU_MANUAL_HOOK
-          \tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
-          #endif
-          """
-          patch_file("kernel/reboot.c", reboot_header, r"SYSCALL_DEFINE4\s*\(\s*reboot[^{]*\{[^;]*;[^;]*;[^;]*int\s+ret\s*=\s*0;", reboot_body, "ksu_handle_sys_reboot")
-
-          # 2. fs/exec.c (Eksekusi su binary)
-          exec_header = """
-          #include <linux/types.h>
-          #include <linux/fs.h>
-          #ifdef CONFIG_KSU
-          extern bool ksu_execveat_hook __read_mostly;
-          extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);
-          extern int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);
-          #endif
-          """
-          exec_body = """
-          #ifdef CONFIG_KSU
-          \tif (unlikely(ksu_execveat_hook))
-          \t\tksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
-          \telse
-          \t\tksu_handle_execveat_sucompat(&fd, &filename, &argv, &envp, &flags);
-          #endif
-          """
-          patch_file("fs/exec.c", exec_header, r"static\s+int\s+do_execveat_common[^{]*\{[^;]*;[^;]*;[^;]*;[^;]*;[^;]*int\s+retval;", exec_body, "ksu_handle_execveat")
-
-          # 3. fs/open.c (faccessat)
-          open_header = """
-          #include <linux/types.h>
-          #ifdef CONFIG_KSU
-          extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);
-          #endif
-          """
-          open_body = """
-          #ifdef CONFIG_KSU
-          \tksu_handle_faccessat(&dfd, &filename, &mode, NULL);
-          #endif
-          """
-          patch_file("fs/open.c", open_header, r"SYSCALL_DEFINE3\s*\(\s*faccessat[^{]*\{[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;[^;]*unsigned\s+int\s+lookup_flags[^;]*;", open_body, "ksu_handle_faccessat")
-
-          # 4. fs/read_write.c (vfs_read) - Ditambahkan &pos
-          rw_header = """
-          #include <linux/types.h>
-          #include <linux/fs.h>
-          #ifdef CONFIG_KSU
-          extern int ksu_handle_vfs_read(struct file **file_ptr, char __user **buf_ptr, size_t *count_ptr, loff_t **pos);
-          #endif
-          """
-          rw_body = """
-          #ifdef CONFIG_KSU
-          \tksu_handle_vfs_read(&file, &buf, &count, &pos);
-          #endif
-          """
-          patch_file("fs/read_write.c", rw_header, r"ssize_t\s+vfs_read\s*\([^{]*\{\s*ssize_t\s+ret;", rw_body, "ksu_handle_vfs_read")
-
-          # 5. fs/stat.c (vfs_statx)
-          stat_header = """
-          #include <linux/types.h>
-          #ifdef CONFIG_KSU
-          extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
-          #endif
-          """
-          stat_body = """
-          #ifdef CONFIG_KSU
-          \tksu_handle_stat(&dfd, &filename, &flags);
-          #endif
-          """
-          patch_file("fs/stat.c", stat_header, r"int\s+vfs_statx[^{]*\{[^;]*;[^;]*;[^;]*unsigned\s+int\s+lookup_flags[^;]*;", stat_body, "ksu_handle_stat")
-
-          # 6. drivers/input/input.c (Safe mode key input)
-          input_header = """
-          #include <linux/types.h>
-          #ifdef CONFIG_KSU
-          extern bool ksu_input_hook __read_mostly;
-          extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
-          #endif
-          """
-          input_body = """
-          #ifdef CONFIG_KSU
-          \tif (unlikely(ksu_input_hook))
-          \t\tksu_handle_input_handle_event(&type, &code, &value);
-          #endif
-          """
-          patch_file("drivers/input/input.c", input_header, r"static\s+void\s+input_handle_event[^{]*\{[^;]*int\s+disposition[^;]*;", input_body, "ksu_handle_input_handle_event")
-          EOF
+          rm -rf drivers/kernelsu
+          curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/refs/heads/master/kernel/setup.sh" | bash -s master
 
       - name: Fragment EROFS
         working-directory: kernel
@@ -178,7 +60,7 @@ jobs:
           CONFIG_EROFS_FS_CLUSTER_PAGE_LIMIT=1
           EOF
 
-      - name: Inject KSU-Next, DroidSpace, Custom Name & Matikan Kprobes
+      - name: Inject KernelSU, DroidSpace, Custom Name & Matikan Kprobes
         working-directory: kernel
         run: |
           mkdir -p arch/arm64/configs
@@ -188,15 +70,15 @@ jobs:
           # CONFIG_LOCALVERSION_AUTO is not set
           CONFIG_LOCALVERSION="-salsachan-nekopieee-hyperos+"
 
-          # Matikan KPROBES total (Biar adem & anti-panic)
+          # Matikan KPROBES total (Adem & bebas kernel panic)
           # CONFIG_KPROBES is not set
           # CONFIG_HAVE_KPROBES is not set
           # CONFIG_KRETPROBES is not set
           # CONFIG_KPROBE_EVENTS is not set
 
-          # KernelSU-Next (Manual Hook Mode)
+          # KernelSU dengan ARM64 Branch Link (Anti-ribet tanpa manual hook)
           CONFIG_KSU=y
-          CONFIG_KSU_MANUAL_HOOK=y
+          CONFIG_KSU_HACK_ARM64_BRANCH_LINK=y
 
           # DroidSpace Kernel Requirements (Namespaces & Netfilter)
           CONFIG_NAMESPACES=y
@@ -267,7 +149,7 @@ jobs:
 
           CFG=arch/arm64/configs
 
-          # Fragment config yang digabung (merlin_defconfig sebagai basis utama)
+          # Fragment config yang digabung (merlin_defconfig sebagai basis)
           FRAGMENTS="$CFG/merlin_defconfig"
           [ -f "$CFG/merlin.config" ] && FRAGMENTS="$FRAGMENTS $CFG/merlin.config"
           [ -f "$CFG/erofs.config" ]  && FRAGMENTS="$FRAGMENTS $CFG/erofs.config"
@@ -288,13 +170,15 @@ jobs:
           	CROSS_COMPILE="aarch64-linux-gnu-" \
           	CROSS_COMPILE_ARM32="arm-linux-gnueabi-" \
           	CROSS_COMPILE_COMPAT="arm-linux-gnueabi-" \
-          	CONFIG_DEBUG_SECTION_MISMATCH=y
+          	CONFIG_DEBUG_SECTION_MISMATCH=y \
+          	Image.gz-dtb
           EOF
           chmod +x build.sh
 
       - name: Build Kernel dengan build.sh
         working-directory: kernel
         run: |
+          set -o pipefail
           ./build.sh 2>&1 | tee build.log || {
             echo "================ ERROR LOG ================"
             grep -E -C 3 "error:|fatal error:" build.log | tail -n 100 || tail -n 150 build.log
