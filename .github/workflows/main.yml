@@ -122,7 +122,7 @@ jobs:
           """
           patch_file("fs/open.c", open_header, r"SYSCALL_DEFINE3\s*\(\s*faccessat[^{]*\{[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;[^;]*;[^;]*unsigned\s+int\s+lookup_flags[^;]*;", open_body, "ksu_handle_faccessat")
 
-          # 4. fs/read_write.c (vfs_read)
+          # 4. fs/read_write.c (vfs_read) - Ditambahkan &pos
           rw_header = """
           #include <linux/types.h>
           #include <linux/fs.h>
@@ -132,7 +132,7 @@ jobs:
           """
           rw_body = """
           #ifdef CONFIG_KSU
-          \tksu_handle_vfs_read(&file, &buf, &count, pos);
+          \tksu_handle_vfs_read(&file, &buf, &count, &pos);
           #endif
           """
           patch_file("fs/read_write.c", rw_header, r"ssize_t\s+vfs_read\s*\([^{]*\{\s*ssize_t\s+ret;", rw_body, "ksu_handle_vfs_read")
