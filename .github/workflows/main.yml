@@ -56,22 +56,20 @@ jobs:
           echo "=== Cloning SUSFS kernel-4.14 from simonpunk ==="
           git clone --depth=1 -b kernel-4.14 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs
           
-          # 1. Copy SUSFS core source & headers
-          cp -r /tmp/susfs/kernel_patches/fs/* fs/ 2>/dev/null || true
-          cp -r /tmp/susfs/kernel_patches/include/linux/* include/linux/ 2>/dev/null || true
+          # 1. Copy SUSFS core source & headers ke tree kernel
+          cp -f /tmp/susfs/kernel_patches/fs/susfs.c fs/
+          cp -f /tmp/susfs/kernel_patches/include/linux/susfs.h include/linux/
           
-          # 2. Patch KernelSU for SUSFS support
-          if [ -d "KernelSU" ]; then
-            cd KernelSU && patch -p1 < /tmp/susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
-            cd ..
-          elif [ -d "drivers/kernelsu" ]; then
-            cd drivers/kernelsu && patch -p1 < /tmp/susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
-            cd ..
-          fi
-          
-          # 3. Patch Kernel 4.14 VFS hooks
+          # 2. Patch Kernel 4.14 VFS hooks
           if [ -f "/tmp/susfs/kernel_patches/50_add_susfs_in_kernel-4.14.patch" ]; then
-            patch -p1 < /tmp/susfs/kernel_patches/50_add_susfs_in_kernel-4.14.patch || echo "Notice: SUSFS kernel patch applied or needs manual review"
+            patch -p1 --forward < /tmp/susfs/kernel_patches/50_add_susfs_in_kernel-4.14.patch || echo "Notice: VFS patch applied"
+          fi
+
+          # 3. Patch KernelSU bridge agar symbol dikenali linker
+          if [ -d "drivers/kernelsu" ]; then
+            cd drivers/kernelsu
+            patch -p1 --forward < /tmp/susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || echo "Notice: KSU patch applied"
+            cd ../..
           fi
 
       - name: Fragment EROFS
@@ -108,15 +106,15 @@ jobs:
           CONFIG_KSU_SUSFS=y
           CONFIG_KSU_SUSFS_SUS_MOUNT=y
           CONFIG_KSU_SUSFS_SUS_KSTAT=y
-          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
-          CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n
+          # CONFIG_KSU_SUSFS_TRY_UMOUNT is not set
+          # CONFIG_KSU_SUSFS_SUS_OVERLAYFS is not set
 
           # Google BBR TCP Congestion Control (Low Ping Gaming & Anti Buffer)
           CONFIG_TCP_CONG_BBR=y
           CONFIG_DEFAULT_TCP_CONG="bbr"
           CONFIG_INET_TCP_FASTOPEN=y
 
-          # Fast Compression for ZRAM 4GB (LZ4 & ZSTD)
+          # Fast Compression for ZRAM (LZ4 & ZSTD)
           CONFIG_CRYPTO_LZ4=y
           CONFIG_CRYPTO_LZ4HC=y
           CONFIG_CRYPTO_ZSTD=y
