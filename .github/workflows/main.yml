@@ -23,7 +23,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bc bison flex libssl-dev libelf-dev cpio lz4 zstd xz-utils curl \
-            device-tree-compiler python3 \
+            device-tree-compiler python3 git patch \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi
 
       - name: Ambil Clang r416183b
@@ -50,6 +50,30 @@ jobs:
           rm -rf drivers/kernelsu
           curl -LSs "https://raw.githubusercontent.com/backslashxx/KernelSU/refs/heads/master/kernel/setup.sh" | bash -s master
 
+      - name: Setup & Patch SUSFS 4.14 (Level Kernel Root Stealth)
+        working-directory: kernel
+        run: |
+          echo "=== Cloning SUSFS kernel-4.14 from simonpunk ==="
+          git clone --depth=1 -b kernel-4.14 https://gitlab.com/simonpunk/susfs4ksu.git /tmp/susfs
+          
+          # 1. Copy SUSFS core source & headers
+          cp -r /tmp/susfs/kernel_patches/fs/* fs/ 2>/dev/null || true
+          cp -r /tmp/susfs/kernel_patches/include/linux/* include/linux/ 2>/dev/null || true
+          
+          # 2. Patch KernelSU for SUSFS support
+          if [ -d "KernelSU" ]; then
+            cd KernelSU && patch -p1 < /tmp/susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
+            cd ..
+          elif [ -d "drivers/kernelsu" ]; then
+            cd drivers/kernelsu && patch -p1 < /tmp/susfs/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch || true
+            cd ..
+          fi
+          
+          # 3. Patch Kernel 4.14 VFS hooks
+          if [ -f "/tmp/susfs/kernel_patches/50_add_susfs_in_kernel-4.14.patch" ]; then
+            patch -p1 < /tmp/susfs/kernel_patches/50_add_susfs_in_kernel-4.14.patch || echo "Notice: SUSFS kernel patch applied or needs manual review"
+          fi
+
       - name: Fragment EROFS
         working-directory: kernel
         run: |
@@ -60,7 +84,7 @@ jobs:
           CONFIG_EROFS_FS_CLUSTER_PAGE_LIMIT=1
           EOF
 
-      - name: Inject KernelSU, DroidSpace, Custom Name & Matikan Kprobes
+      - name: Inject KernelSU, SUSFS, BBR, DroidSpace, Custom Name & Performance Configs
         working-directory: kernel
         run: |
           mkdir -p arch/arm64/configs
@@ -79,6 +103,27 @@ jobs:
           # KernelSU dengan ARM64 Branch Link (Anti-ribet)
           CONFIG_KSU=y
           CONFIG_KSU_HACK_ARM64_BRANCH_LINK=y
+
+          # SUSFS (Super User S-Flag) - Root Stealth untuk M-Banking
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+          CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n
+
+          # Google BBR TCP Congestion Control (Low Ping Gaming & Anti Buffer)
+          CONFIG_TCP_CONG_BBR=y
+          CONFIG_DEFAULT_TCP_CONG="bbr"
+          CONFIG_INET_TCP_FASTOPEN=y
+
+          # Fast Compression for ZRAM 4GB (LZ4 & ZSTD)
+          CONFIG_CRYPTO_LZ4=y
+          CONFIG_CRYPTO_LZ4HC=y
+          CONFIG_CRYPTO_ZSTD=y
+          CONFIG_ZRAM_DEF_COMP_LZ4=y
+
+          # Schedutil CPU Governor Tuning
+          CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y
 
           # DroidSpace Kernel Requirements (Namespaces & Netfilter)
           CONFIG_NAMESPACES=y
