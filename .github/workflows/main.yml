@@ -82,7 +82,7 @@ jobs:
           CONFIG_EROFS_FS_CLUSTER_PAGE_LIMIT=1
           EOF
 
-      - name: Inject KernelSU, SUSFS, BBR, DroidSpace, Custom Name & Performance Configs
+      - name: Inject KernelSU, SUSFS, BBR, Anti-AutoReset, DroidSpace & Performance Configs
         working-directory: kernel
         run: |
           mkdir -p arch/arm64/configs
@@ -98,6 +98,29 @@ jobs:
           # CONFIG_KRETPROBES is not set
           # CONFIG_KPROBE_EVENTS is not set
 
+          # ==========================================
+          # ANTI AUTO-RESET / ANTI-WIPE PADA KERNEL
+          # ==========================================
+          # Matikan pelapor crash MediaTek AEE (Biang kerok lempar ke recovery)
+          # CONFIG_MTK_AEE_FEATURE is not set
+          # CONFIG_MTK_AEE_AED is not set
+          # CONFIG_MTK_AEE_IPANIC is not set
+
+          # Matikan Watchdog Kicker (Biar mati paksa gak dianggap hang)
+          # CONFIG_MTK_WD_KICKER is not set
+
+          # Bypass Panic on Unclean Shutdown
+          CONFIG_PANIC_TIMEOUT=0
+          # CONFIG_PANIC_ON_OOPS is not set
+
+          # EXT4 Clean Journal Mount
+          CONFIG_EXT4_FS=y
+          CONFIG_EXT4_FS_POSIX_ACL=y
+          CONFIG_EXT4_FS_SECURITY=y
+
+          # ==========================================
+          # KERNELSU & SUSFS CONFIGURATION
+          # ==========================================
           # KernelSU dengan ARM64 Branch Link (Anti-ribet)
           CONFIG_KSU=y
           CONFIG_KSU_HACK_ARM64_BRANCH_LINK=y
@@ -109,6 +132,9 @@ jobs:
           # CONFIG_KSU_SUSFS_TRY_UMOUNT is not set
           # CONFIG_KSU_SUSFS_SUS_OVERLAYFS is not set
 
+          # ==========================================
+          # PERFORMANCE, NETWORK & ZRAM CONFIGS
+          # ==========================================
           # Google BBR TCP Congestion Control (Low Ping Gaming & Anti Buffer)
           CONFIG_TCP_CONG_BBR=y
           CONFIG_DEFAULT_TCP_CONG="bbr"
@@ -123,7 +149,9 @@ jobs:
           # Schedutil CPU Governor Tuning
           CONFIG_CPU_FREQ_GOV_SCHEDUTIL=y
 
-          # DroidSpace Kernel Requirements (Namespaces & Netfilter)
+          # ==========================================
+          # DROIDSPACE REQUIREMENTS (Containers & Net)
+          # ==========================================
           CONFIG_NAMESPACES=y
           CONFIG_UTS_NS=y
           CONFIG_IPC_NS=y
